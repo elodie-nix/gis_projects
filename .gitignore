@@ -6,6 +6,53 @@
 .RData
 .RDataTmp
 
+# ignore data 
+data/*
+*.csv
+*.gpkg
+*.geojson
+*.tsv
+*.xlsx
+
+## Shapefiles 
+*.shp
+*.shx
+*.dbf
+*.prj
+*.sbn
+*.sbx
+*.fbn
+*.fbx
+*.ain
+*.aih
+*.atx
+*.ixs
+*.mxs
+*.cpg
+
+#raster
+*.tif
+*.tiff
+*.tfw
+*.img
+*.jgw
+*.sid
+*.sdw
+
+#other spatial data 
+*.gdb/
+*.mdb/
+*.sqlite
+*.gpkg
+*.kml
+*.kmz
+*.geojson
+*.topojson
+*.qgs~
+*.qgz~
+*.lock
+.com.esri.internal.*
+
 # User-specific files
 .Ruserdata
 
