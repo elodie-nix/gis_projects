@@ -1,0 +1,200 @@
+---
+title: "Homework1"
+format: html
+editor: visual
+---
+
+## Objective
+
+Unzip the downloaded census file and open 2018-SA1-dataset-individual-part-3a-total-NZ_updated_16-7-20, you will see a tab for Territorial authority. Join the 2018 paid employee field to the spatial data and make a basic map. Hint, you may need to make a new `.csv` file from the data.
+
+# Load the Data
+
+## Loading the CSV
+
+```{r}
+library(tidyverse)
+nz_csv <- read_csv("Statistical Area 1 dataset for Census 2018-total-New Zealand_updated_4-11-21/2018_Cleaned.csv")  
+```
+
+## Load the shapefile
+
+```{r}
+library(sf)
+#st_read turns a spatial dataset from computer and turns it into an sf object
+nz_shp <- st_read("statsnz-territorial-authority-2018-generalised-SHP/territorial-authority-2018-generalised.shp")
+```
+
+To get a summary of the data held within the shapefile data (attribute table) enter the following:
+
+```{r}
+summary(nz_shp)
+```
+
+To have a quick look what the shapefile looks like enter the following:
+
+```{r}
+plot(st_geometry(nz_shp))
+```
+
+```{r}
+library(sf)
+nz_shp %>% 
+  st_geometry() %>%
+  plot()
+```
+
+### Check the attribute table
+
+In the environment tab, click on the nz_shp. It will open up an attribute table like QGIS.
+
+## Review CSV
+
+```{r}
+names(nz_csv)
+```
+
+**Check Row count:**
+
+```{r}
+tail(nz_csv)
+```
+
+## Join SHP & CSV
+
+auto complete column names: **Autocomplete with `$`:** type the object name and a dollar sign, then press Tab:
+
+```{r}
+nz_shp_join <- nz_shp%>%
+  merge(.,
+        nz_csv,
+        by.x= "TA2018_V1_", 
+        by.y="Area_Code")
+```
+
+## Check to see if it joined properly
+
+```{r}
+nz_shp_join%>%
+  head(., n=10)
+
+```
+
+## Add a new column calculating percentage of paid employees out of total employed people
+
+```{r}
+nz_shp_join <- nz_shp_join %>%
+  mutate(paid_emp_pct = (`2018_PaidEmployee` / `2018_GTotal2`) * 100)
+```
+
+Double checking the result:
+
+```{r}
+summary(nz_shp_join$paid_emp_pct)
+```
+
+# Making a Thematic Map
+
+## Make a map showing 2018 paid employees
+
+```{r}
+library(tmap)
+```
+
+```{r}
+tmap_mode("plot")
+# change the fill to your column name if different
+nz_shp_join %>%
+  qtm(.,fill = "paid_emp_pct")
+```
+
+```{r}
+install.packages("rmapshaper")
+```
+
+```{r}
+nz_map <- nz_shp_join %>%
+  filter(TA2018_V1_!= "999") %>%
+  rmapshaper::ms_simplify(keep = 0.05)
+```
+
+```{r, fig.width=5, fig.height=7}
+tmap_mode("plot")
+
+tm_shape(nz_map) +
+  tm_polygons(
+    fill = "paid_emp_pct",
+    fill.scale = tm_scale_intervals(
+      values = "carto.mint",
+      style = "jenks",
+      n = 5
+    ),
+    fill.legend = tm_legend(
+      title = "Paid employees (%)",
+      title.size = 0.9,
+      text.size = 0.8,
+      position = tm_pos_in("right", "bottom")
+    ),
+    col = "grey40",
+    lwd = 0.3
+  ) +
+  tm_title("Paid Employees as a Share of the Employed Population, 2018", size = 1.2) +
+  tm_layout(
+    bg.color = "lightblue",
+    frame = FALSE,
+    text.fontfamily = "Questrial"
+  ) +
+  tm_credits("Source: Stats NZ, 2018 Census. Employed census usually resident population aged 15+.\nAuthor: Elodie Nix, October 2026",
+             position = tm_pos_out("center", "bottom", pos.h = "left"),
+             size = 0.6,
+             color = "grey10")
+```
+
+# Export the Data
+
+With the 999 area deleted :
+
+```{r}
+nz_map %>%
+  st_write(.,
+           here::here("Week1_Homework", "nz_employment.gpkg"),
+           layer = "nz_2018_employment",
+           delete_dsn = TRUE)
+```
+
+With the 999 area still in it:
+
+```{r}
+nz_shp_join %>%
+  filter(TA2018_V1_!= "999") %>%
+  st_write(.,
+           here::here("Week1_Homework", "nz_employment.gpkg"),
+           layer = "nz_2018_employment",
+           delete_dsn = TRUE)
+```
+
+# Export with the original CSV
+
+```{r}
+library(readr)
+library(RSQLite)
+
+con <- dbConnect(RSQLite::SQLite(),
+                 dbname = here::here("Week1_Homework", "nz_employment.gpkg"))
+```
+
+```{r}
+Hidecon %>%
+  dbListTables()
+```
+
+```{r}
+con %>%
+  dbWriteTable(.,
+               "nz_csv1",
+               nz_csv,
+               overwrite=TRUE)
+
+con %>% 
+  dbDisconnect()
+```

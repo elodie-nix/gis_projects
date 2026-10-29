@@ -1,0 +1,167 @@
+---
+title: "w2_hw"
+format: html
+editor: visual
+---
+
+## Week 2 Homework
+
+Task:
+
+You need calculate the average percent of science students (in all) grades per county meeting the required standards and produce a map to show where the Country averages are above or below the State of Washington average. **Note** these websites require registration and the data is also on Moodle.
+
+1.  Import packages and libraries
+2.  read in data
+3.  examine data
+4.  join spatial and non spatial data
+5.  calculate average percent of science students in all grades per county meeting required standards
+6.  create a map to show were county averages are above or below the state average
+
+```{r}
+#load in relevant packages/libraries 
+library(tidyverse)
+library(dplyr)
+library(stringr)
+library(janitor)
+library(ggplot2)
+library(tmap)
+library(tmaptools)
+library(sf)
+library(readr)
+```
+
+# Read the Data In
+
+```{r}
+ReportCardData <- read_csv("Report_Card_Assessment_Data_2018-19_School_Year_20241008.csv",
+                           locale = locale(encoding = "latin1"),
+                           na = c("NULL", "", "NA", "n/a", "#VALUE!"))
+```
+
+# Examine Data
+
+```{r}
+#check to see data has been read in as a tibble/data frame -- class() checks data type
+class(ReportCardData)
+```
+
+```{r}
+  
+Datatypelist <- ReportCardData %>% 
+  summarise_all(class) %>%
+  pivot_longer(everything(), #take wide data and make it long 
+               names_to="All_variables", #specify column names to variables
+               values_to="Variable_class") #specify class 
+
+Datatypelist
+```
+
+# Clean Data
+
+```{r}
+# use janitor to clean names
+ReportCardData <- clean_names(ReportCardData)
+```
+
+# Data Manipulation & Analysis
+
+Check
+
+```{r}
+#check to see what values are stored in the org_level column before next step 
+count(science_students, organization_level)
+
+count(science_schools, student_group_type)
+
+count(distinct(science_schools, school_name))
+```
+
+### Filter just science students, all grades, only by school per county
+
+```{r}
+
+science_county <- ReportCardData %>%
+  select(county, organization_level, grade_level, test_subject, count_of_students_expected_to_test, count_met_standard) %>%
+  #filter out non "school" types from organization_level field 
+  filter(organization_level == "School") %>%
+  # filter just science test
+  filter(test_subject == "Science") %>%
+  filter(grade_level == "All Grades") %>%
+  filter(county != "Multiple") %>%
+    group_by(county) %>%
+  na.omit() %>%
+    ## na.rm = T means remove missing values from the data
+    # could also use na.omit or filter greater than 0
+
+  summarise(total_county_met_standard=sum(count_met_standard), 
+            total_county_to_test=sum(count_of_students_expected_to_test))%>%
+  mutate(percent_met_per_county=(total_county_met_standard/total_county_to_test)*100)
+
+```
+
+```{r}
+#test on just adams county to make sure the previous code ran properly
+test <- science_county %>%
+filter(county == "Adams") %>%
+  summarise(total_met = sum(count_met_standard), 
+                            total_exp = sum(count_of_students_expected_to_test))
+```
+
+```{r}
+state_average <- mean(science_county$percent_met_per_county)
+  
+```
+
+```{r}
+#make a column that compares each county value to the state average and some text to say if it is above or below... 
+
+county_only_above_below_state <- science_county %>%
+  mutate(difference_to_state=(percent_met_per_county-state_average))%>%
+  mutate(across(difference_to_state, ~ round(.x, 0)))%>%
+  mutate(above_below = case_when(difference_to_state<0 ~ "below",
+                                 difference_to_state>0 ~ "above",
+                                 difference_to_state==0 ~ "equal"
+  ))
+```
+
+# Map Creation
+
+```{r}
+# read in the shp
+shape <- st_read("Week 2 Homework boundaries-20261021/Washington_Counties_with_Natural_Shoreline___washsh_area.shp")
+```
+
+```{r}
+plot(WA_county)
+```
+
+```{r}
+#join spatial and non-spatial data
+# the . just means use teh data already loaded
+joined_data <- shape %>% 
+  clean_names(.) %>%
+  left_join(., 
+            county_only_above_below_state,
+            by = c("countylabe" = "county"))
+#keep = true keeps key values from both datasets
+```
+
+```{r}
+
+#bbox_county <- joined_data %>%
+#  st_bbox(.) %>% 
+#  tmaptools::read_osm(., type = "osm", zoom = NULL)
+
+#tm_shape(bbox_county)+
+#  tm_rgb()+
+
+tm_shape(joined_data) + 
+  tm_polygons(fill="above_below",
+              fill.scale = tm_scale_categorical(
+                values="brewer.bu_pu"),
+              fill_alpha=0.5)+
+  tm_compass(position = c("left", "bottom"),type = "arrow")+
+  tm_scalebar(position = c("left", "bottom")) +
+  tm_title_out("Counties above or below state avearge for science in all grades", 
+               position=tm_pos_out("center", "top"))
+```

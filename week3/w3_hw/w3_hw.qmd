@@ -1,0 +1,277 @@
+---
+title: "hw_3"
+format: html
+editor: visual
+---
+
+# Week 3: Homework
+
+## Task:
+
+1.  SSPs: shared socioeconomic pathways
+    1.  SSP1: lots of mitigation and adaptation
+    2.  SSP5: fossil fuel development
+2.  Pick any country in the world and:
+    1.  produce descriptive statistics that show:
+        1.  the difference in **maximum temperature** for key cities between SSP1 and SSP5 for the years 2081-2100
+        2.  use any model and resolution
+
+## Data Sources:
+
+- [WorldClim future projections](https://www.worldclim.org/data/cmip6/cmip6_clim2.5m.html)
+
+- [Country outlines](https://gadm.org/data.html)
+
+- [World city points](https://hub.arcgis.com/datasets/esri::world-cities/explore?location=3.049068%2C-178.464838%2C1.71)
+
+## Outline:
+
+1.  Load packages
+2.  Load in data
+    1.  shape/geom – usa
+        1.  check CRS
+        2.  print(\<dataframe\>)
+    2.  load in climate data
+        1.  use dplyr with str_detect() to search for file names contains tif
+        2.  load data into a SpatRaster
+        3.  rename layers within the stack
+    3.  load city data
+        1.  create data frame of key cities (if needed?)
+        2.  Extract the data from the Rasterstack for all points using terra::extract – extract as a tibble, add_column
+3.  Descriptive Statistics
+    1.  crop then mask raster to shape/geom of usa
+    2.  create a dual data histogram for city that shows max temp in ssp1 and ssp5
+        1.  loop this for all key cities
+
+## Load Packages
+
+```{r}
+library(sf) 
+library(here)
+library(tidyverse) 
+library(terra) 
+library(tidyterra)
+library(janitor)
+```
+
+## Read in Vector Data
+
+```{r}
+# read in usa boundary & clean names
+usa_outline <- st_read("gadm41_USA.gpkg", 
+                      layer='ADM_ADM_0')
+
+usa_outline <- clean_names(usa_outline)
+#plot(usa_outline) 
+
+usa_state <- st_read("gadm41_USA.gpkg", 
+                     layer='ADM_ADM_1')
+
+usa_state <- clean_names(usa_state)
+#plot(usa_state) 
+
+
+# read in key city data: keeping only us cities & select columns
+usa_city <- st_read("USA_Cities.geojson") %>%
+  filter_out(FIPS_CNTRY != "US") %>%
+  select(FID, OBJECTID, CITY_NAME, ADMIN_NAME, FIPS_CNTRY, CNTRY_NAME, STATUS)
+
+usa_city <- clean_names(usa_city)
+
+
+#check CRS
+#print(usa_city)
+#print(usa_outline)
+
+```
+
+```{r}
+#select just the states that contain the key cities I want to focus on  
+state_keep <- c("Connecticut", "District of Columbia", 	"Maine", "Maryland", "Massachusetts", "New Hampshire", "New York", "Pennsylvania", "Rhode Island", "Vermont")
+
+usa_state<- usa_state %>%
+  filter(name_1 %in% state_keep) %>%
+  select(name_1, geom)
+
+nrow(usa_state)
+```
+
+## Load in Raster Data
+
+```{r}
+# load in raster tifs of ssp1 and ssp5  
+#library(fs)
+#listfiles<-dir_info("/Users/elodienix/Documents/CASA/CASA0005_Practicals/CASA0005_GIS/week3/w3_hw") %>%
+  #filter(str_detect(path, ".tif")) %>% 
+  #dplyr::select(path)%>% 
+  #pull() 
+
+#have a look at the file names 
+#listfiles
+
+```
+
+```{r}
+# SSP1
+# decided to load in manually, one tif by one tif bc they are each already spat rasters
+
+#load the data
+library(terra)
+ssp1<-terra::rast("wc2.1_2.5m_tmax_UKESM1-0-LL_ssp126_2081-2100.tif")
+
+# have a look at the raster layer jan
+ssp1
+
+#rename names column to month abbrev
+month <- c("Jan", "Feb", "Mar", "Apr", "May", "Jun", 
+           "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+names(ssp1) <- month
+```
+
+```{r}
+# SSP5 
+# decided to load in manually, one tif by one tif bc they are each already spat rasters
+
+#load the data
+library(terra)
+ssp5<-terra::rast("wc2.1_2.5m_tmax_UKESM1-0-LL_ssp585_2081-2100.tif")
+
+# have a look at the raster layer jan
+ssp5
+
+#rename names column to month abbrev
+month <- c("Jan", "Feb", "Mar", "Apr", "May", "Jun", 
+           "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+names(ssp5) <- month
+```
+
+```{r}
+# get data for just jan using new layer name
+ssp5$Jan
+```
+
+## Loading City Data
+
+1.  load city data
+    1.  create data frame of key cities (if needed?)
+    2.  Extract the data from the Rasterstack for all points using terra::extract – extract as a tibble, add_column
+
+```{r}
+#identify just key cities in the northeast to keep as our focus "key cities" 
+#create new df with those and match them to extract new df from usa_city df
+
+ne_city_keep <- c("Hartford", "Washington D.C.", "Augusta", "Baltimore", "Boston", "Concord", "New York", "Philadelphia", "Providence", "Montpelier")
+
+ne_city <- usa_city %>%
+ filter(city_name %in% ne_city_keep)
+  
+# Extract the data from the Rasterstack for all points 
+us_city_temp_ssp1<- terra::extract(ssp1, ne_city) %>%
+  as_tibble() %>%
+  add_column(city_name = ne_city$city_name, .before = "Jan")
+
+us_city_temp_ssp5 <- terra::extract(ssp5, ne_city) %>%
+  as_tibble() %>%
+  add_column(city_name = ne_city$city_name, .before = "Jan")
+```
+
+## Descriptive Statistics
+
+```{r}
+# CROP 
+# SSP1
+us_temp_ssp1 <- usa_state %>%
+  # now crop our temp data to the extent
+  terra::crop(ssp1,.)
+
+# SSP5
+us_temp_ssp5 <- usa_state %>%
+  # now crop our temp data to the extent
+  terra::crop(ssp5,.)
+```
+
+```{r}
+# MASK
+exact_us_temp_ssp1 <-terra::mask(us_temp_ssp1, usa_state)
+exact_us_temp_ssp5 <-terra::mask(us_temp_ssp5, usa_state)
+
+```
+
+```{r}
+par(family = "Futura")
+library(tidyterra)
+ggplot() +
+  # function from tidyterra
+  geom_spatraster(
+    # the raster 
+    data = exact_us_temp_ssp1,
+    # the layer within the raster
+    aes(fill = Mar)
+  ) + geom_sf(data = ne_city)
+  
+```
+
+## Creating Bar Chart
+
+```{r}
+# convert data to long data type 
+squish_ssp1 <-us_city_temp_ssp1%>%
+  pivot_longer(
+    cols = Jan:Dec,
+    names_to = "Month",
+    values_to = "Temp"
+  ) %>% add_column(scenario = "ssp1") #add column with the spp scenario to keep track 
+
+head(squish_ssp1)
+
+squish_ssp5 <-us_city_temp_ssp5%>%
+  pivot_longer(
+    cols = Jan:Dec,
+    names_to = "Month",
+    values_to = "Temp"
+  ) %>% add_column(scenario = "ssp5") #add column with the spp scenario to keep track 
+
+head(squish_ssp5)
+
+#combine both of the long data frames into one stacked df
+squish_ssp1_ssp5 <- bind_rows(squish_ssp1, squish_ssp5)
+nrow(squish_ssp1_ssp5)
+
+
+squish_ordered <- squish_ssp1_ssp5 %>%
+  drop_na()%>% 
+  mutate(Month = factor(Month, levels = month))
+
+nrow(squish_ordered) #check to make sure drop_na didnt remove anything 
+```
+
+```{r}
+# create bar chart for each city
+
+library(ggplot2)
+  
+ggplot(squish_ordered, aes(x= Month, y = Temp, fill= scenario)) +
+  geom_bar(stat= "identity", position = "identity", alpha = 0.2) + 
+  labs(title = "Average Maximum Temperature by Month for Key Cities in the NE", x = "Month", y = "Average Maximum Temperature (C)") +
+  facet_wrap(city_name ~ .)+
+  scale_fill_manual(values = c("blue", "red"))
+
+
+```
+
+```{r}
+# convert squish_ordered back to wide 
+stretch_ordered <- squish_ordered %>%
+  pivot_wider(names_from = scenario, values_from = Temp) %>%
+  mutate(diff = ssp5 - ssp1)
+
+
+# diff in mean per year by city
+mean_temp <- stretch_ordered %>%
+  group_by(city_name) %>%
+  summarise(mean_diff_temp = mean(diff, na.rm=TRUE))
+
+
+```

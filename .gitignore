@@ -1,0 +1,59 @@
+# ignore data 
+data/*
+*.csv
+*.gpkg
+*.geojson
+*.tsv
+*.xlsx
+*.xls
+.RDataTmp
+
+## Shapefiles 
+*.shp
+*.shx
+*.dbf
+*.prj
+*.sbn
+*.sbx
+*.fbn
+*.fbx
+*.ain
+*.aih
+*.atx
+*.ixs
+*.mxs
+*.cpg
+*.zip
+
+#raster
+*.tif
+*.tiff
+*.tfw
+*.img
+*.jgw
+*.sid
+*.sdw
+
+#other spatial data 
+*.gdb
+*.mdb
+*.sqlite
+*.gpkg
+*.kml
+*.kmz
+*.geojson
+*.topojson
+
+
+# Large data files (over 50MB), kept locally only
+Week1_Homework/Statistical Area 1 dataset for Census 2018-total-New Zealand_updated_4-11-21/
+week2/w2_hw/Report_Card_Assessment_Data_2018-19_School_Year_20241008.csv
+week2/w2_practical/LAD_Dec_2015_FCB_GB_2022_1515733023741489344.geojson
+week3/w3_hw/*.tif
+week3/w3_hw/gadm41_USA.gpkg
+week3/w3_practical/gadm41_AUS.gpkg
+Week1_Practical/statistical-gis-boundaries-london/
+
+.RDataTmp
+*.xls
+Week1_Practical/statistical-gis-boundaries-london/
