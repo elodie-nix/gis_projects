@@ -1,0 +1,962 @@
+---
+title: "Spatial data project workflow template"
+subtitle: "Built from CASA0005 practicals 1–8"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+# eval = FALSE so this template knits as a reference without running.
+# In a real project, delete this line or set eval = TRUE.
+knitr::opts_chunk$set(eval = FALSE, message = FALSE, warning = FALSE)
+```
+
+# How to use this template
+
+**Placeholders.** Replace each one with your own names:
+
+| Placeholder | What it stands for |
+|---|---|
+| `shapefile1`, `shapefile2` | polygon layers (sf), e.g. boroughs, wards |
+| `points1` | point layer (sf), e.g. plaques, hotels |
+| `df1`, `df2` | tables read from a CSV |
+| `raster1` | single-layer raster (terra SpatRaster) |
+| `rasterstack1` | multi-layer raster |
+| `shp_id` / `df_id` | the shared ID column in the spatial layer / the table (e.g. `GSS_CODE` / `new_code`) |
+| `name_col` | area name column |
+| `var1`, `var2` | numeric columns you're analysing |
+| `group_col` | a category column |
+| `dep_var`, `ind_var1`, `ind_var2` | regression variables |
+| `"data"`, `"file1.shp"` | your folder and file names |
+
+**Order of a project.** Not every project needs every step. Most need steps 0–7; steps 8–10 are the analysis method you choose.
+
+0. Set up packages and paths
+1. Read in data
+2. Check and clean attributes
+3. Check and match CRS
+4. Join tables to spatial data (attribute join)
+5. Spatial operations (subset, spatial join, counts, raster crop/mask/extract)
+6. Descriptive statistics and charts
+7. Map design
+8. Point pattern analysis (P6)
+9. Spatial autocorrelation (P7)
+10. Regression and spatial regression (P8)
+11. Save outputs
+
+`(P#)` marks the practical a chunk comes from. Lines marked `(not in practicals)` are small extras.
+
+---
+
+# 0. Set up
+
+```{r packages}
+# install once in the console (not in the Rmd):
+# install.packages(c("tidyverse", "sf", "terra", "tidyterra", "tmap", "tmaptools", "here", "janitor", "fs"))
+
+library(tidyverse)   # dplyr, readr, tidyr, ggplot2, stringr, tibble
+library(sf)          # vector data
+library(terra)       # raster data
+library(tidyterra)   # tidyverse verbs + ggplot2 for rasters
+library(tmap)        # maps
+library(tmaptools)   # read_osm basemaps
+library(here)        # file paths from the project folder
+library(janitor)     # clean_names
+library(fs)          # dir_info
+
+# load only what the project needs:
+# library(plotly)                                   # interactive charts (P3)
+# library(classInt)                                 # class breaks (P5)
+# library(grid)                                     # placing maps/charts on one page (P5)
+# library(spatstat); library(sp); library(fpc); library(dbscan); library(ggspatial)   # point patterns (P6)
+# library(spdep); library(RColorBrewer)             # spatial autocorrelation (P7)
+# library(broom); library(car); library(corrr); library(performance)
+# library(spatialreg); library(lmtest); library(spgwr)                                # regression (P8)
+
+# terra and other packages can mask dplyr verbs:
+# the course writes dplyr::select(), dplyr::filter() to be safe
+```
+
+---
+
+# 1. Read in data
+
+## 1a. Vector data: shapefile, GeoPackage, GeoJSON (P1, P3, P6)
+
+```{r read-vector}
+# shapefile: point to the .shp (the .dbf, .shx and .prj must be in the same folder)
+shapefile1 <- st_read(here("data", "folder", "file1.shp"))
+
+# GeoPackage: list the layers first, then pick one
+st_layers(here("data", "file1.gpkg"))
+shapefile1 <- st_read(here("data", "file1.gpkg"), layer = "layer_name")
+
+# GeoJSON: local file or URL
+points1 <- st_read(here("data", "file2.geojson"))
+```
+
+## 1b. CSV: local or from the web (P1, P2, P8)
+
+```{r read-csv}
+# local file
+df1 <- read_csv(here("data", "file1.csv"))
+
+# from the web:
+# - encoding = "latin1" stops symbols like £ breaking column names
+# - na = ... tells R which text means "missing", so numeric columns stay numeric
+df1 <- read_csv("https://web-address/file1.csv",
+                locale = locale(encoding = "latin1"),
+                na = c("", "NA", "n/a")) %>%
+  clean_names()   # lowercase_with_underscores, no spaces/symbols
+
+# force column types if read_csv guesses wrong (e.g. codes read as numbers)
+df1 <- read_csv(here("data", "file1.csv"),
+                col_types = cols(df_id = col_character(),
+                                 var1 = col_number(),
+                                 var2 = col_number()))
+```
+
+## 1c. CSV with coordinates → points (P5, P8)
+
+```{r read-csv-points}
+points1 <- read_csv(here("data", "file_xy.csv")) %>%
+  # x = longitude, y = latitude; crs = the CRS the coordinates are written in
+  st_as_sf(., coords = c("longitude", "latitude"), crs = 4326) %>%
+  st_transform(., 27700) %>%                   # reproject (see step 3)
+  filter(type_col == "value")                  # optional: keep only what you need
+```
+
+## 1d. Raster: single file or a stack from a folder (P3, P4)
+
+```{r read-raster}
+# single raster
+raster1 <- terra::rast(here("data", "file1.tif"))
+raster1          # prints extent, resolution, CRS, layer names
+plot(raster1)
+
+# several .tif files from one folder → one multi-layer stack
+listfiles <- dir_info(here("data")) %>%
+  filter(str_detect(path, ".tif")) %>%
+  dplyr::select(path) %>%
+  pull()
+
+rasterstack1 <- listfiles %>%
+  terra::rast()
+
+rasterstack1[[1]]                              # first layer
+names(rasterstack1) <- c("layer1", "layer2", "layer3")   # one name per layer (e.g. months)
+rasterstack1 %>% tidyterra::select(layer1)     # pick a layer by name
+```
+
+## 1e. Download and unzip from the web (P8)
+
+```{r download-unzip}
+download.file("https://web-address/file.zip",
+              destfile = here("data", "file.zip"))
+
+dir_info(here("data")) %>%
+  filter(str_detect(path, ".zip")) %>%
+  dplyr::select(path) %>%
+  pull() %>%
+  as.character() %>%
+  utils::unzip(exdir = here("data"))
+```
+
+## 1f. First look (P1)
+
+```{r first-look}
+summary(shapefile1)                    # columns, ranges, CRS
+head(df1, n = 10)                      # first rows
+shapefile1 %>% st_geometry() %>% plot()   # outline only
+qtm(shapefile1)                        # quick tmap
+```
+
+---
+
+# 2. Check and clean attributes
+
+## 2a. Check column types (P2, P7, P8)
+
+```{r check-types}
+# numbers stored as "character" usually mean text like "n/a" in the column → fix the na = argument in read_csv
+Datatypelist <- df1 %>%
+  summarise_all(class) %>%
+  pivot_longer(everything(),
+               names_to = "All_variables",
+               values_to = "Variable_class")
+Datatypelist
+
+# for an sf layer, drop the geometry first
+shapefile1 %>% st_drop_geometry() %>% summarise_all(class)
+```
+
+## 2b. Clean and subset (P2, P6)
+
+```{r clean-subset}
+shapefile1 <- shapefile1 %>%
+  clean_names() %>%                                    # tidy column names
+  filter(str_detect(shp_id, "^E09")) %>%               # keep rows whose code starts with E09 (London boroughs)
+  dplyr::select(shp_id, name_col, var1, var2) %>%      # keep the columns you need (contains("text") also works)
+  dplyr::rename(new_name = old_name)                   # rename: new = old
+
+points1 <- distinct(points1)                           # remove duplicate points/rows (P6)
+
+df1 <- df1 %>%
+  mutate(group_col = as.factor(group_col))             # categories → factor (P8)
+```
+
+---
+
+# 3. Check and match CRS
+
+All layers must share a CRS before any overlay, join, crop or distance calculation.
+
+**Common CRS codes**
+- **27700:** British National Grid, in metres. Use it for UK areas, distances and point patterns.
+- **4326:** WGS84 latitude/longitude, used by GPS and web basemaps.
+- **3112:** an Australian projection (P3).
+
+## 3a. Vector (P3, P5)
+
+```{r crs-vector}
+st_crs(shapefile1)               # full CRS info
+st_crs(shapefile1)$epsg          # just the EPSG code
+
+# st_set_crs: ONLY when the CRS is missing (NA). It labels the data, it does NOT move coordinates
+shapefile1 <- shapefile1 %>% st_set_crs(., 4326)
+
+# st_transform: reprojects (recalculates coordinates) into a new CRS
+shapefile1 <- shapefile1 %>% st_transform(., 27700)
+points1    <- points1 %>% st_transform(., 27700)
+```
+
+## 3b. Raster (P3)
+
+```{r crs-raster}
+crs(raster1)                                   # check
+
+raster1_proj <- raster1 %>%
+  terra::project(., "EPSG:27700")              # reproject a raster
+# P3 uses proj4 strings too, e.g. Mollweide:
+# terra::project(raster1, "+proj=moll +lon_0=0 +x_0=0 +y_0=0 +ellps=WGS84 +datum=WGS84 +units=m +no_defs")
+
+# often simpler: reproject the VECTOR to match the raster before crop/mask/extract
+shapefile1_r <- shapefile1 %>% st_transform(., crs(raster1))
+```
+
+## 3c. sf ↔ sp (P3, P6)
+
+```{r sf-sp}
+# some older packages need sp objects
+shapefile1_sp <- shapefile1 %>% as(., "Spatial")   # sf → sp
+shapefile1_sf <- shapefile1_sp %>% st_as_sf()       # sp → sf
+```
+
+---
+
+# 4. Join a table to spatial data (attribute join) (P1, P2, P7, P8)
+
+```{r join-checks}
+# BEFORE JOINING
+# 1. Find the unique ID that exists in BOTH (e.g. GSS code). Column names can differ; values and type must match
+# 2. Check the ID is unique in the table: duplicates multiply rows in the result
+df1 %>% count(df_id) %>% filter(n > 1)          # any rows returned = duplicate IDs
+# 3. Both IDs should be the same type (usually character, e.g. "E09000001"); see step 2a
+# 4. clean_names() renames columns (e.g. "New code" → new_code): use the cleaned name in by =
+# 5. Put the sf layer on the LEFT so the result stays spatial
+```
+
+```{r join-attribute}
+joined1 <- shapefile1 %>%
+  left_join(., df1, by = c("shp_id" = "df_id"))  # c("name in left" = "name in right")
+
+# which join?
+# left_join:  keeps ALL features in shapefile1; no match → NA. Usual choice
+# inner_join: keeps only features with a match in both; unmatched areas disappear from the map
+# right_join: keeps all rows of df1; rows without a match get empty geometry. Rarely wanted
+# merge(shapefile1, df1, by.x = "shp_id", by.y = "df_id") is the base R version (P1)
+```
+
+```{r join-after}
+# AFTER JOINING: check it worked
+nrow(shapefile1); nrow(joined1)               # should match for left_join; more rows = duplicate IDs
+
+joined1 <- joined1 %>%
+  distinct(shp_id, .keep_all = TRUE)          # remove duplicated features (P2, P7)
+
+summary(joined1$var1)                         # lots of NAs = IDs didn't match
+
+# (not in practicals) list table rows that found no match
+df1 %>% anti_join(st_drop_geometry(shapefile1), by = c("df_id" = "shp_id"))
+
+qtm(joined1, fill = "var1")                   # quick map to eyeball the join (P8)
+```
+
+---
+
+# 5. Spatial operations
+
+## 5a. Select by location / clip points to an area (P6, P7)
+
+```{r spatial-subset}
+# both layers must share a CRS (step 3)
+points1_sub <- points1[shapefile1, ]         # keep points inside the polygons ("select by location")
+
+area1 <- shapefile1 %>% filter(name_col == "Area1")   # select by attribute: one area
+points1_area <- points1[area1, ]
+
+st_intersects(shapefile1, points1_sub)       # which points fall in which polygon (row numbers)
+```
+
+## 5b. Spatial join (P5)
+
+```{r spatial-join}
+# st_join attaches attributes by LOCATION (no shared ID needed). Order matters:
+
+# polygons first → one row per point inside each polygon (polygons repeated)
+joined_sp <- st_join(shapefile1, points1)
+joined_sum <- joined_sp %>%
+  group_by(shp_id, name_col) %>%
+  summarise(count = n())
+# NOTE (P5): polygons with 0 points still show count = 1 here (the NA row). Use 5c for true counts
+
+# points first → each point gets the attributes of the polygon it sits in
+points1_attr <- st_join(points1, shapefile1)
+```
+
+## 5c. Count points per polygon and density (P5, P7)
+
+```{r point-in-polygon}
+counts1 <- shapefile1 %>%
+  mutate(n_points = lengths(st_intersects(., points1))) %>%  # count points per polygon (P5 uses st_contains)
+  mutate(area = st_area(.)) %>%                              # m² when the CRS is in metres
+  mutate(density = n_points / area) %>%                      # points per m²
+  clean_names()
+```
+
+## 5d. Vector geoprocessing (P3, P5, P6, P7)
+
+```{r vector-geoprocessing}
+shapefile1_simple <- shapefile1 %>% st_simplify(., dTolerance = 1000)   # fewer vertices, draws faster
+
+bbox1 <- c(xmin = 0, ymin = 0, xmax = 100000, ymax = 100000)            # in the layer's CRS units
+shapefile1_crop <- shapefile1$geometry %>% st_crop(., bbox1)            # cut to a rectangle
+
+centroids1 <- shapefile1 %>% st_centroid() %>% st_geometry()            # centre point of each polygon
+```
+
+## 5e. Raster: crop, mask, extract (P3)
+
+```{r raster-crop-mask}
+raster1_crop <- terra::crop(raster1, shapefile1_r)       # cut to the vector's bounding box
+raster1_mask <- terra::mask(raster1_crop, shapefile1_r)  # cells outside the exact outline → NA
+plot(raster1_mask)
+```
+
+```{r raster-extract}
+# values at points from a table of coordinates (same CRS as the raster)
+site <- c("Site1", "Site2", "Site3")
+lon  <- c(0.00, 0.00, 0.00)
+lat  <- c(0.00, 0.00, 0.00)
+samples <- data.frame(site, lon, lat, row.names = "site")
+
+vals1 <- terra::extract(rasterstack1, samples) %>%
+  as_tibble() %>%
+  add_column(Site = site, .before = 1)
+
+# or from an sf point layer
+vals1 <- terra::extract(rasterstack1, points1)
+```
+
+---
+
+# 6. Descriptive statistics and charts
+
+## 6a. Summary statistics (P3, P5)
+
+```{r desc-summary}
+summary(joined1)                                   # quick overview of every column
+
+stats1 <- joined1 %>%
+  st_drop_geometry() %>%                           # stats run on tables, not geometry
+  dplyr::select(var1, var2) %>%
+  summarise(across(everything(), list(min = min, max = max, mean = mean,
+                                      median = median, sd = sd)))
+# NAs make these return NA: remove them first with drop_na()
+```
+
+## 6b. Reshape to long format (P3, P5)
+
+```{r desc-pivot}
+# long format = one column of names + one column of values; needed for grouped stats/plots
+df_long <- df1 %>%
+  pivot_longer(cols = c(var1, var2),               # or cols = 1:12
+               names_to = "variable",
+               values_to = "value") %>%
+  drop_na()
+```
+
+## 6c. Grouped statistics (P3)
+
+```{r desc-grouped}
+grouped1 <- df_long %>%
+  group_by(variable) %>%                           # one row per group
+  summarise(mean  = mean(value, na.rm = TRUE),
+            sd    = sd(value, na.rm = TRUE),
+            min   = min(value, na.rm = TRUE),
+            max   = max(value, na.rm = TRUE),
+            IQR   = IQR(value, na.rm = TRUE),
+            count = n())
+
+overall1 <- df_long %>%                            # one figure for the whole dataset
+  summarise(mean_all = mean(value, na.rm = TRUE))
+
+head(grouped1, n = 1)
+```
+
+## 6d. New variables and comparisons (P2)
+
+```{r desc-derived}
+df1 <- df1 %>%
+  mutate(avg = (var1 + var2) / 2) %>%                          # average of two columns
+  mutate(normalised = avg / mean(avg)) %>%                     # relative to the mean
+  mutate(diff = avg - 81.16) %>%                               # difference from a reference value
+  mutate(across(where(is.numeric), round, 3)) %>%              # round every numeric column
+  mutate(compare = case_when(avg > 81.16 ~ "above average",    # label by condition
+                             TRUE ~ "below average"))
+
+df1 %>% arrange(desc(normalised)) %>% slice_head(n = 5)       # top 5
+```
+
+## 6e. Distribution charts (P3, P5, P8)
+
+```{r desc-hist-base}
+# quick base R histogram with set breaks
+hist(df1$var1,
+     breaks = c(0, 10, 20, 30, 40),
+     col = "red",
+     main = "Histogram title",
+     xlab = "x label",
+     ylab = "Frequency")
+```
+
+```{r desc-hist-ggplot}
+# histogram + dashed mean line
+ggplot(df1, aes(x = var1)) +
+  geom_histogram(color = "black", fill = "white") +
+  geom_vline(aes(xintercept = mean(var1, na.rm = TRUE)),
+             color = "blue", linetype = "dashed", linewidth = 1) +
+  labs(title = "Title", x = "x label", y = "Frequency") +
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 0.5))   # centre the title
+
+# histogram + density curve (P8): checks the shape of the distribution (normal? skewed?)
+ggplot(df1, aes(x = var1)) +
+  geom_histogram(aes(y = after_stat(density)), binwidth = 5) +   # P8 writes ..density.. (older syntax)
+  geom_density(colour = "red", linewidth = 1, adjust = 1)
+```
+
+```{r desc-hist-groups}
+# two groups overlaid, each with its mean line
+means1 <- df_long %>% group_by(variable) %>% summarise(mean = mean(value, na.rm = TRUE))
+
+ggplot(df_long, aes(x = value, color = variable, fill = variable)) +
+  geom_histogram(position = "identity", alpha = 0.5) +
+  geom_vline(data = means1, aes(xintercept = mean, color = variable), linetype = "dashed") +
+  labs(title = "Title", x = "x label", y = "Frequency") +
+  theme_classic()
+
+# one panel per group
+ggplot(df_long, aes(x = value)) +
+  geom_histogram(color = "black", binwidth = 5) +
+  facet_grid(variable ~ .)
+```
+
+```{r desc-violin}
+# violin plot: distribution shape per group (P5)
+ggplot(df_long, aes(x = variable, y = value, fill = variable)) +
+  geom_violin(trim = FALSE, color = "grey30", alpha = 0.8) +
+  scale_fill_brewer(palette = "Pastel1") +
+  scale_x_discrete(labels = c("var1" = "Label 1", "var2" = "Label 2")) +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "none")
+```
+
+```{r desc-plotly}
+# interactive overlaid histogram (P3)
+library(plotly)
+g1 <- df_long %>% filter(variable == "var1")
+g2 <- df_long %>% filter(variable == "var2")
+
+plot_ly(alpha = 0.6) %>%
+  add_histogram(x = g1$value, xbins = list(start = 0, end = 40, size = 2.5), name = "Var 1") %>%
+  add_histogram(x = g2$value, xbins = list(start = 0, end = 40, size = 2.5), name = "Var 2") %>%
+  layout(barmode = "overlay",
+         xaxis = list(title = "x label"),
+         yaxis = list(title = "Frequency"))
+```
+
+```{r desc-scatter}
+# scatter plot + straight-line fit (P8)
+ggplot(df1, aes(x = var1, y = var2)) +
+  geom_point() +
+  stat_smooth(method = "lm", se = FALSE, linewidth = 1)
+```
+
+## 6f. Raster statistics (P3)
+
+```{r desc-raster}
+hist(raster1_mask[[1]], col = "red", main = "Layer 1")   # quick histogram of one layer
+
+rasterdf1 <- raster1_mask %>% as.data.frame()            # one row per cell, one column per layer
+
+raster_long <- rasterdf1 %>%
+  pivot_longer(cols = everything(), names_to = "layer", values_to = "value") %>%
+  drop_na()
+
+raster_stats1 <- raster_long %>%                         # stats per layer, as in 6c
+  group_by(layer) %>%
+  summarise(mean = mean(value), sd = sd(value), min = min(value), max = max(value))
+
+# raster on a map with ggplot (tidyterra)
+ggplot() +
+  geom_spatraster(data = raster1_mask, aes(fill = layer1))
+```
+
+## 6g. Class breaks for maps (P5)
+
+```{r desc-breaks}
+library(classInt)
+breaks1 <- joined1 %>%
+  st_drop_geometry() %>%
+  pull(var1) %>%                                  # needs a vector, not a table
+  classIntervals(., n = 5, style = "jenks")       # also "quantile", "equal", "sd"
+breaks1$brks                                      # use in tm_scale_intervals(breaks = breaks1$brks)
+```
+
+---
+
+# 7. Map design (tmap)
+
+```{r map-mode}
+tmap_mode("plot")   # static map: use for reports
+# tmap_mode("view") # interactive map: use for exploring
+```
+
+## 7a. Full choropleth (P2, P5, P7)
+
+```{r map-choropleth}
+map1 <- tm_shape(joined1) +
+  tm_polygons(fill = "var1",
+              col = "black", lwd = 0.5,                      # border colour and width
+              fill_alpha = 0.8,                              # transparency
+              fill.scale = tm_scale_intervals(
+                values = "brewer.bu_pu",                     # palette (browse: cols4all::c4a_gui())
+                n = 5,
+                style = "jenks"),                            # or style = "fixed", breaks = breaks1$brks
+              fill.legend = tm_legend(
+                title = "Legend title",
+                title.size = 0.85, size = 0.8,
+                position = tm_pos_out("right", "center", pos.v = "center")),  # legend outside the map
+              fill.chart = tm_chart_violin()) +              # optional: distribution chart under the legend
+  tm_compass(type = "arrow", position = c("left", "bottom")) +
+  tm_scalebar(position = c("left", "bottom")) +
+  tm_title("Map title", size = 2, position = c("center", "top")) +
+  tm_credits("Data: source", size = 0.6)
+map1
+```
+
+## 7b. Points and labels over polygons (P5, P6)
+
+```{r map-points}
+tm_shape(shapefile1) +
+  tm_polygons(fill_alpha = 0.5) +            # or tm_borders(col = "darkblue") for outlines only
+tm_shape(points1) +
+  tm_dots(fill = "blue", size = 0.1)
+# styled points with labels:
+#  tm_symbols(shape = 20, fill = "orange", col = "black", size = 0.8) +
+#  tm_text("name_col", xmod = -1, ymod = -0.5)
+```
+
+## 7c. Side-by-side maps sharing one legend (P5)
+
+```{r map-facets}
+map_facets <- tm_shape(joined1) +
+  tm_polygons(fill = c("var1", "var2"),                     # one map per column
+              fill.scale = tm_scale_intervals(values = "brewer.blues", breaks = breaks1$brks),
+              fill.legend = tm_legend(title = "Legend title"),
+              fill.free = FALSE) +                          # FALSE = shared legend
+  tm_facets(nrow = 2) +
+  tm_layout(panel.labels = c("Label 1", "Label 2"), panel.show = TRUE)
+map_facets
+```
+
+## 7d. Basemaps (P2)
+
+```{r map-basemap-static}
+# static: download tiles for the layer's extent, draw as an RGB raster
+basemap1 <- shapefile1 %>%
+  st_bbox(.) %>%
+  tmaptools::read_osm(., type = "esri", zoom = NULL)
+
+tm_shape(basemap1) + tm_rgb() +
+tm_shape(joined1) +
+  tm_polygons(fill = "var1", fill_alpha = 0.5)
+```
+
+```{r map-basemap-interactive}
+# interactive: P2 transforms to 4326 first
+tmap_mode("view")
+tm_shape(st_transform(joined1, 4326)) +
+  tm_polygons(fill = "var1", fill_alpha = 0.5) +
+  tm_basemap(server = "OpenStreetMap")
+tmap_mode("plot")
+```
+
+## 7e. Inset map and saving (P5)
+
+```{r map-inset}
+# 1. locator map: wider area, outlined box showing the study area
+studyarea_box <- st_bbox(joined1, crs = st_crs(joined1)) %>%
+  st_as_sfc()                                                # bbox → polygon
+
+locator1 <- tm_shape(shapefile2) +                           # e.g. country outline
+  tm_polygons(col = "darkslategray1") +
+  tm_shape(studyarea_box) +
+  tm_borders(col = "grey40", lwd = 3) +
+  tm_layout(frame = FALSE, bg.color = "transparent")
+
+# 2. add it as an inset to the main map
+inset1 <- tmap_grob(locator1, asp = 1.1)
+final_map <- map1 + tm_inset(inset1, position = tm_pos_out("right", "center"))
+
+# 3. save
+tmap_save(final_map, here("outputs", "map1.png"),
+          width = 8, height = 6, units = "in", dpi = 300)
+```
+
+```{r map-with-chart}
+# put a map and a ggplot chart on one page (P5)
+library(grid)
+png(here("outputs", "map_chart.png"), width = 8, height = 6, units = "in", res = 300)
+map1
+print(chart1, vp = viewport(x = 0.67, y = 0.83, width = 0.25, height = 0.35))   # chart1 = a saved ggplot
+dev.off()
+```
+
+## 7f. ggplot2 alternative (P3, P6)
+
+```{r map-ggplot}
+library(ggspatial)
+ggplot() +
+  annotation_map_tile(zoom = 13) +                       # basemap tiles
+  geom_sf(data = joined1, aes(fill = var1), alpha = 0.7, color = NA) +
+  geom_sf(data = points1, size = 1) +
+  theme_bw()
+# rasters: ggplot() + geom_spatraster(data = raster1, aes(fill = layer1))
+```
+
+---
+
+# 8. Point pattern analysis (P6)
+
+Use this for "are these points clustered?". Work in a metre-based CRS (e.g. 27700).
+
+```{r ppp-setup}
+library(spatstat); library(sp)
+
+area1 <- shapefile1 %>% filter(name_col == "Area1")      # study area
+points1_area <- distinct(points1)[area1, ]                # remove duplicates, clip to area
+
+window1 <- as.owin(area1)                                 # study-area boundary for spatstat
+
+points1_sp <- points1_area %>% as(., "Spatial")           # sf → sp
+points1.ppp <- ppp(x = points1_sp@coords[, 1],
+                   y = points1_sp@coords[, 2],
+                   window = window1)
+plot(points1.ppp, pch = 16, cex = 0.5, main = "Title")
+```
+
+```{r ppp-kde}
+# kernel density: sigma = smoothing distance in CRS units (try several)
+points1.ppp %>% density(., sigma = 500) %>% plot()
+```
+
+```{r ppp-quadrat}
+# quadrat test: H0 = complete spatial randomness (CSR)
+# p < 0.05 → reject CSR (pattern is clustered or dispersed)
+# P6 also builds the observed vs expected Poisson comparison by hand
+teststats1 <- quadrat.test(points1.ppp, nx = 6, ny = 6)
+plot(points1.ppp, pch = 16, cex = 0.5)
+plot(teststats1, add = TRUE, col = "red")
+teststats1
+```
+
+```{r ppp-ripley}
+# Ripley's K: observed line ABOVE the red CSR line = clustering at that distance; below = dispersed
+K1 <- points1.ppp %>% Kest(., correction = "border") %>% plot()
+Kval1 <- as.data.frame(Kest(points1.ppp, correction = "Ripley"))   # values as a table
+```
+
+```{r ppp-dbscan}
+# DBSCAN: finds WHERE the clusters are
+library(fpc); library(dbscan)
+points1_xy <- points1_sp %>% coordinates(.) %>% as.data.frame()
+
+points1_xy %>% dbscan::kNNdistplot(., k = 4)   # choose eps at the "knee" of the curve; k = MinPts
+
+db1 <- points1_xy %>% fpc::dbscan(., eps = 700, MinPts = 4)
+# eps = search radius (CRS units); MinPts = minimum points per cluster
+points1_xy <- points1_xy %>% mutate(dbcluster = db1$cluster)   # 0 = noise
+```
+
+```{r ppp-hulls-map}
+points1_clusters <- st_as_sf(points1_xy, coords = c("coords.x1", "coords.x2"), crs = 27700)
+
+hulls1 <- points1_clusters %>%
+  filter(dbcluster > 0) %>%                         # drop noise points
+  group_by(dbcluster) %>%
+  summarise(geometry = st_combine(geometry)) %>%    # combine each cluster's points
+  mutate(geometry = st_convex_hull(geometry)) %>%   # draw a polygon around them
+  st_as_sf()
+
+library(ggspatial)
+ggplot() +
+  annotation_map_tile(zoom = 13) +
+  geom_sf(data = points1_clusters, aes(color = dbcluster), size = 3) +
+  geom_sf(data = hulls1, aes(fill = dbcluster), alpha = 0.8, color = NA, show.legend = FALSE) +
+  theme_bw()
+```
+
+---
+
+# 9. Spatial autocorrelation (P7)
+
+Use this for "do similar values sit near each other?". It needs polygon values: use the densities from 5c, or a variable joined in step 4.
+
+```{r autocorr-neighbours}
+library(spdep)
+
+# keep one row per area (P7)
+counts1 <- counts1 %>%
+  group_by(shp_id) %>%
+  summarise(density = first(density), name = first(name_col), count = first(n_points))
+
+coords1 <- counts1 %>% st_centroid() %>% st_geometry()
+
+# neighbours: queen = polygons sharing an edge OR corner
+nb1 <- counts1 %>% poly2nb(., queen = TRUE)
+summary(nb1)                                   # average number of neighbours
+# or k nearest neighbours (P8)
+knn1 <- coords1 %>% knearneigh(., k = 4) %>% knn2nb()
+
+plot(nb1, st_geometry(coords1), col = "red")
+plot(counts1$geometry, add = TRUE)
+
+# spatial weights
+lw1 <- nb1 %>% nb2listw(., style = "C")
+# style: "B" = binary, "W" = row standardised (each row sums to 1), "C" = globally standardised
+```
+
+```{r autocorr-global}
+# Global Moran's I: +1 clustered, 0 random, -1 dispersed
+I_global <- counts1 %>% pull(density) %>% as.vector() %>% moran.test(., lw1)
+
+# Geary's C: < 1 similar values cluster, 1 = none, > 1 dissimilar values cluster
+C_global <- counts1 %>% pull(density) %>% as.vector() %>% geary.test(., lw1)
+
+# Getis-Ord General G: G > expected → high values cluster (hot spots); < expected → low values cluster
+G_global <- counts1 %>% pull(density) %>% as.vector() %>% globalG.test(., lw1)
+
+I_global; C_global; G_global
+```
+
+```{r autocorr-local}
+# Local Moran's I and Gi* for each area
+I_local <- counts1 %>% pull(density) %>% as.vector() %>% localmoran(., lw1) %>% as_tibble()
+Gi_local <- counts1 %>% pull(density) %>% as.vector() %>% localG(., lw1)
+
+# attach z-scores without re-sorting counts1 in between (row order must match)
+counts1 <- counts1 %>%
+  mutate(density_I  = as.numeric(I_local$Ii),
+         density_Iz = as.numeric(I_local$Z.Ii),
+         density_G  = as.numeric(Gi_local))
+```
+
+```{r autocorr-map}
+# z-score breaks: ±1.65 = 90%, ±1.96 = 95%, ±2.58 = 99% significance
+breaks_z <- c(-1000, -2.58, -1.96, -1.65, 1.65, 1.96, 2.58, 1000)
+
+tm_shape(counts1) +
+  tm_polygons(fill = "density_Iz",                 # or "density_G" for Gi* hot/cold spots
+              fill.scale = tm_scale_intervals(values = "brewer.br_bg",   # diverging palette
+                                              midpoint = "NA",
+                                              style = "fixed",
+                                              breaks = breaks_z),
+              fill.legend = tm_legend(title = "Local Moran's I (z-score)",
+                                      position = tm_pos_out("right", "center", pos.v = "center")))
+```
+
+---
+
+# 10. Regression and spatial regression (P8)
+
+## 10a. Explore and transform
+
+```{r reg-explore}
+reg_data <- joined1 %>% clean_names()
+
+# distributions: aim for roughly normal; skewed → try a transformation
+ggplot(reg_data, aes(x = ind_var1)) + geom_histogram()
+ggplot(reg_data, aes(x = log(ind_var1))) + geom_histogram()
+
+library(car)
+symbox(~ind_var1, reg_data, na.rm = TRUE, powers = seq(-3, 3, by = .5))   # compares transformations: pick the most symmetric
+
+ggplot(reg_data, aes(x = ind_var1, y = dep_var)) + geom_point()           # linear relationship?
+```
+
+## 10b. OLS model
+
+```{r reg-ols}
+library(broom)
+model1 <- lm(dep_var ~ ind_var1 + log(ind_var2), data = reg_data)
+
+summary(model1)
+tidy(model1)       # coefficients and p-values as a table
+glance(model1)     # R², adjusted R², AIC
+
+model_data1 <- model1 %>% augment(., reg_data)   # adds fitted values and residuals
+reg_data <- reg_data %>% mutate(model1_resids = residuals(model1))
+```
+
+## 10c. Check assumptions
+
+```{r reg-assumptions}
+# 1. Residuals roughly normal
+ggplot(model_data1, aes(x = .resid)) + geom_histogram()
+
+# 2. No multicollinearity: correlations < 0.8; VIF < 10
+library(corrr)
+reg_data %>% st_drop_geometry() %>%
+  dplyr::select(dep_var, ind_var1, ind_var2) %>%
+  correlate() %>%
+  rplot()
+vif(model1)
+
+# 3. Equal variance (homoscedasticity): no funnel shape in residuals vs fitted
+par(mfrow = c(2, 2)); plot(model1)
+library(performance); check_model(model1, check = "all")
+
+# 4. Independent errors: Durbin-Watson about 2 = OK
+durbinWatsonTest(model1) %>% tidy()
+```
+
+## 10d. Are the residuals spatially autocorrelated?
+
+```{r reg-resid-moran}
+qtm(reg_data, fill = "model1_resids")                     # map the residuals
+
+coords_r <- reg_data %>% st_centroid() %>% st_geometry()
+nb_r  <- reg_data %>% poly2nb(., queen = TRUE)
+knn_r <- coords_r %>% knearneigh(., k = 4) %>% knn2nb()
+lw_queen <- nb_r  %>% nb2listw(., style = "W")
+lw_knn   <- knn_r %>% nb2listw(., style = "W")
+
+# significant Moran's I on the residuals → spatial model needed
+reg_data %>% st_drop_geometry() %>% pull(model1_resids) %>% moran.test(., lw_queen) %>% tidy()
+reg_data %>% st_drop_geometry() %>% pull(model1_resids) %>% moran.test(., lw_knn) %>% tidy()
+```
+
+## 10e. Lag or error model?
+
+```{r reg-lm-tests}
+# Lagrange multiplier tests: compare LMerr vs LMlag; if both are significant, use the robust (R) versions
+lm.LMtests(model1, lw_queen, test = c("LMerr", "LMlag", "RLMerr", "RLMlag", "SARMA"))
+```
+
+```{r reg-spatial-lag}
+# spatial lag: the dependent variable in neighbouring areas affects each area
+library(spatialreg)
+slag1 <- lagsarlm(dep_var ~ ind_var1 + log(ind_var2),
+                  data = reg_data,
+                  nb2listw(nb_r, style = "C"),
+                  method = "eigen")
+tidy(slag1); glance(slag1)        # rho = strength of the spatial lag
+
+library(lmtest)
+lrtest(slag1, model1)             # significant → lag model fits better than OLS
+
+impacts(slag1, listw = nb2listw(nb_r, style = "C"))   # direct, indirect and total effects
+```
+
+```{r reg-spatial-error}
+# spatial error: the residuals are spatially correlated (unmeasured spatial factor)
+sem1 <- errorsarlm(dep_var ~ ind_var1 + log(ind_var2),
+                   data = reg_data,
+                   nb2listw(knn_r, style = "C"),
+                   method = "eigen")
+tidy(sem1)                        # lambda = strength of the spatial error
+```
+
+## 10f. Dummy (categorical) variables
+
+```{r reg-dummy}
+reg_data <- reg_data %>%
+  mutate(group_col = as.factor(group_col)) %>%
+  mutate(group_col = relevel(group_col, ref = "Reference level"))   # choose the baseline category
+contrasts(reg_data$group_col)
+
+model2 <- lm(dep_var ~ ind_var1 + log(ind_var2) + group_col, data = reg_data)
+tidy(model2)
+```
+
+## 10g. Geographically weighted regression (GWR)
+
+```{r reg-gwr}
+# GWR: lets coefficients vary across space
+library(spgwr)
+coords_xy <- st_coordinates(coords_r)
+reg_data2 <- cbind(reg_data, coords_xy)                  # adds X and Y columns
+
+bw1 <- gwr.sel(dep_var ~ ind_var1 + log(ind_var2),
+               data = reg_data2,
+               coords = cbind(reg_data2$X, reg_data2$Y),
+               adapt = TRUE)                            # adaptive bandwidth
+
+gwr1 <- gwr(dep_var ~ ind_var1 + log(ind_var2),
+            data = reg_data2,
+            coords = cbind(reg_data2$X, reg_data2$Y),
+            adapt = bw1, hatmatrix = TRUE, se.fit = TRUE)
+gwr1
+
+results1 <- as.data.frame(gwr1$SDF)
+names(results1)                                         # find the coefficient column names
+
+reg_data2 <- reg_data %>%
+  mutate(coef_ind1 = results1$ind_var1,
+         # significance: |coefficient| - 2 * SE > 0 → significant at about 95%
+         sig_ind1 = abs(gwr1$SDF$ind_var1) - 2 * gwr1$SDF$ind_var1_se)
+
+tm_shape(reg_data2) +
+  tm_polygons("coef_ind1", fill.scale = tm_scale_intervals(values = "brewer.rd_bu"), fill_alpha = 0.5)
+```
+
+---
+
+# 11. Save outputs (P1, P5)
+
+```{r save-outputs}
+# map image
+tmap_save(map1, here("outputs", "map1.png"), width = 8, height = 6, units = "in", dpi = 300)
+
+# spatial data to a GeoPackage (delete_dsn = TRUE overwrites the whole file)
+joined1 %>% st_write(., here("outputs", "project.gpkg"),
+                     layer = "joined1", delete_dsn = TRUE)
+
+# add a plain table to the same GeoPackage
+library(RSQLite)
+con <- dbConnect(RSQLite::SQLite(), dbname = here("outputs", "project.gpkg"))
+con %>% dbListTables()
+con %>% dbWriteTable(., "df1_table", df1, overwrite = TRUE)
+con %>% dbDisconnect()                                   # always close the connection
+```
